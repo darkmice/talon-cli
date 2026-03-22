@@ -15,3 +15,5 @@ talon-ai = { path = "../talon-ai" }
 talon-evo-core = { path = "../talon-evo-core" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+ctrlc = "3"
+libc = "0.2"

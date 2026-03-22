@@ -1,21 +1,22 @@
 /*
- * Talon CLI — 嵌入式 + 网络双模数据库命令行工具
+ * Talon CLI — 嵌入式 + 网络 + Daemon 三模数据库命令行工具
  *
  * 用法：
- *   talon-cli <DB_PATH>                       嵌入式 REPL（直接打开本地数据库）
- *   talon-cli --connect <host:port>           网络模式（连接运行中的 Talon Server）
- *   talon-cli --connect <host:port> --token T 带认证的网络模式
- *   talon-cli <DB_PATH> -c "SQL语句"          嵌入式单次执行
- *   talon-cli <DB_PATH> -c "SQL1; SQL2"       多条 SQL 分号分隔
+ *   talon-cli <DB_PATH>                       嵌入式 REPL
+ *   talon-cli <DB_PATH> -c "SQL"              单次执行（自动走 daemon 加速）
+ *   talon-cli serve <DB_PATH>                 启动 daemon（数据库只打开一次）
+ *   talon-cli --connect <host:port>           网络模式（TCP 帧协议）
  *   talon-cli --format json -c ":kv get k"    JSON 输出（AI 友好）
  *
  * 架构：
- *   main.rs      — 入口、双模路由、REPL 循环
- *   format.rs    — Value 格式化工具（嵌入模式）
- *   net.rs       — 网络后端（TCP 帧协议客户端）
- *   engine/      — 嵌入模式引擎命令处理（kv, mq, fts, graph, geo, ts, vec, sql, stats）
+ *   main.rs      — 入口、三模路由、REPL 循环
+ *   daemon.rs    — Daemon 模式（Unix Socket 持久化连接）
+ *   format.rs    — Value 格式化工具
+ *   net.rs       — 网络后端（TCP 帧协议）
+ *   engine/      — 引擎命令处理（11 引擎）
  */
 
+mod daemon;
 mod engine;
 mod format;
 mod net;
@@ -41,11 +42,14 @@ pub enum OutputFormat {
 #[command(
     name = "talon-cli",
     version = "0.1.0",
-    about = "Talon CLI — 嵌入式 + 网络双模数据库工具（AI 友好）"
+    about = "Talon CLI — 嵌入式 + 网络 + Daemon 三模数据库工具（AI 友好）"
 )]
 struct Args {
-    /// 数据库目录路径（嵌入模式）
+    /// 数据库目录路径（嵌入模式），或 "serve" 启动 daemon
     db_path: Option<String>,
+
+    /// serve 模式下的数据库路径
+    serve_db_path: Option<String>,
 
     /// 连接到运行中的 Talon Server TCP 端口（格式: host:port）
     #[arg(long)]
@@ -55,7 +59,7 @@ struct Args {
     #[arg(long)]
     token: Option<String>,
 
-    /// 直接执行命令后退出（支持分号分隔多条 SQL）
+    /// 直接执行命令后退出（自动走 daemon 加速）
     #[arg(short, long)]
     cmd: Option<String>,
 
@@ -72,14 +76,26 @@ fn main() {
         _ => OutputFormat::Human,
     };
 
-    // 双模路由
+    // 三模路由
     if let Some(ref addr) = args.connect {
+        // 模式 1: 网络模式（TCP 帧协议）
         run_net_mode(addr, args.token.as_deref(), args.cmd.as_deref(), fmt);
     } else if let Some(ref db_path) = args.db_path {
-        run_embedded_mode(db_path, args.cmd.as_deref(), fmt);
+        if db_path == "serve" {
+            // 模式 2: Daemon 模式 — 启动后台服务
+            let serve_path = args.serve_db_path.as_deref().unwrap_or_else(|| {
+                eprintln!("用法: talon-cli serve <DB_PATH>");
+                std::process::exit(1);
+            });
+            daemon::run_daemon(serve_path);
+        } else {
+            // 模式 3: 嵌入模式（-c 命令自动走 daemon 加速）
+            run_embedded_mode(db_path, args.cmd.as_deref(), fmt);
+        }
     } else {
-        eprintln!("用法: talon-cli <DB_PATH>             (嵌入模式)");
-        eprintln!("      talon-cli --connect <host:port>  (网络模式)");
+        eprintln!("用法: talon-cli <DB_PATH>               (嵌入模式)");
+        eprintln!("      talon-cli serve <DB_PATH>          (daemon 模式)");
+        eprintln!("      talon-cli --connect <host:port>    (网络模式)");
         eprintln!("\n使用 --help 查看详细帮助。");
         std::process::exit(1);
     }
@@ -95,6 +111,14 @@ fn main() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 fn run_embedded_mode(db_path: &str, cmd: Option<&str>, fmt: OutputFormat) {
+    // -c 模式：优先尝试 daemon 连接（毫秒级）
+    if let Some(c) = cmd {
+        if daemon::try_daemon_exec(db_path, c, fmt) {
+            return; // daemon 搞定了，不用打开数据库
+        }
+        // 无 daemon → fallback 到嵌入模式（需要打开数据库）
+    }
+
     let db = match talon::Talon::open(db_path) {
         Ok(db) => db,
         Err(e) => {
@@ -110,7 +134,7 @@ fn run_embedded_mode(db_path: &str, cmd: Option<&str>, fmt: OutputFormat) {
         }
     };
 
-    // 单次执行（支持分号分隔多条命令）
+    // 单次执行
     if let Some(c) = cmd {
         for stmt in split_commands(c) {
             let trimmed = stmt.trim();
@@ -307,7 +331,7 @@ pub fn report_error(msg: &str, fmt: OutputFormat) {
 /// 规则：
 /// - 冒号命令（`:kv set ...`）本身就是一条完整命令
 /// - SQL 以 `;` 分隔多条
-fn split_commands(input: &str) -> Vec<&str> {
+pub(crate) fn split_commands(input: &str) -> Vec<&str> {
     let trimmed = input.trim();
     if trimmed.starts_with(':') {
         // 引擎命令不拆分
@@ -322,12 +346,13 @@ fn split_commands(input: &str) -> Vec<&str> {
 //  帮助信息
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn print_help() {
+pub(crate) fn print_help() {
     println!(
-        r#"Talon CLI v0.1.0 — 嵌入式/网络双模数据库工具（AI 友好）
+        r#"Talon CLI v0.1.0 — 嵌入式 / 网络 / Daemon 三模数据库工具（AI 友好）
 
   启动模式：
     talon-cli <DB_PATH>                        嵌入式（直接打开本地数据库）
+    talon-cli serve <DB_PATH>                  启动 Daemon（数据库只打开一次，极速）
     talon-cli --connect <host:port>            网络（连接 Talon Server TCP）
     talon-cli --connect <host:port> --token T  带认证的网络模式
     talon-cli --format json ...                JSON 输出（AI/脚本友好）
