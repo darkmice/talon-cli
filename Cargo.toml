@@ -1,0 +1,17 @@
+[package]
+name = "talon-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Talon CLI — 嵌入式 + 网络双模，覆盖 9 大基础引擎 + AI + EvoCore。主要供 AI 使用。"
+authors = ["dark.lijin@gmail.com"]
+
+[[bin]]
+name = "talon-cli"
+path = "src/main.rs"
+
+[dependencies]
+talon = { path = "../superclaw-db" }
+talon-ai = { path = "../talon-ai" }
+talon-evo-core = { path = "../talon-evo-core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
