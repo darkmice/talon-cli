@@ -1,19 +1,25 @@
 # Talon MCP Server
 
-> 让 AI 原生访问 Talon 数据库 — 通过 TCP 连接运行中的 SuperClaw
+> 让 AI 原生访问 Talon 数据库全部 11 引擎 — 底层复用 talon-cli
 
 ## 架构
 
 ```
-AI (IDE)  ←→  MCP Protocol (stdio)  ←→  talon_mcp.py  ←→  TCP 帧协议  ←→  SuperClaw :7720
-                                          (Python)         (~0.1ms)        (Talon DB Server)
+AI (IDE)  ←→  MCP Protocol  ←→  talon_mcp.py  ←→  talon-cli  ←→  Talon Server :7720
+               (stdio)           (Python 桥接)     (Rust 全能力)    (SuperClaw 内置)
 ```
 
-**零额外进程** — SuperClaw 桌面端启动时已自动在 `127.0.0.1:7720` 监听 Talon TCP Server。
+- **MCP 层** — 37 个 Tool 定义，JSON 桥接
+- **talon-cli 层** — 全部 11 引擎能力（SQL/KV/MQ/FTS/Graph/Geo/Vec/TS/**AI/EvoCore**）
+- **传输层** — TCP 帧协议连接运行中的 Talon Server
 
 ## 安装
 
 ```bash
+# 1. 编译 talon-cli
+cd /path/to/talon-cli && cargo build --release
+
+# 2. 安装 MCP Python 依赖
 cd mcp
 uv venv .venv && source .venv/bin/activate
 uv pip install "mcp[cli]>=1.0.0"
@@ -21,19 +27,22 @@ uv pip install "mcp[cli]>=1.0.0"
 
 ## IDE 配置
 
-**Gemini Code Assist (`.gemini/settings.json`):**
+**WebStorm / Gemini Code Assist:**
 ```json
 {
     "mcpServers": {
         "talon": {
             "command": "/path/to/mcp/.venv/bin/python3",
-            "args": ["/path/to/talon-cli/mcp/talon_mcp.py", "--host", "127.0.0.1", "--port", "7720"]
+            "args": [
+                "/path/to/talon-cli/mcp/talon_mcp.py",
+                "--connect", "127.0.0.1:7720"
+            ]
         }
     }
 }
 ```
 
-**Claude Desktop / Cursor / Windsurf:**
+**环境变量方式（适合 CI/Docker）：**
 ```json
 {
     "mcpServers": {
@@ -41,58 +50,46 @@ uv pip install "mcp[cli]>=1.0.0"
             "command": "/path/to/mcp/.venv/bin/python3",
             "args": ["/path/to/talon-cli/mcp/talon_mcp.py"],
             "env": {
-                "TALON_HOST": "127.0.0.1",
-                "TALON_PORT": "7720"
+                "TALON_CONNECT": "127.0.0.1:7720",
+                "TALON_CLI_PATH": "/path/to/talon-cli/target/release/talon-cli"
             }
         }
     }
 }
 ```
 
-## 可用 Tools
+## 连接模式
+
+| 模式 | 参数 | 说明 |
+|------|------|------|
+| 网络模式 | `--connect 127.0.0.1:7720` | 连接运行中的 SuperClaw（推荐） |
+| 嵌入模式 | `--db-path ~/.superclaw/talon_data` | 直接打开本地数据库 |
+
+## 可用 Tools (37 个)
 
 ### SQL
-| Tool | 说明 |
-|------|------|
-| `talon_sql_query` | 执行任意 SQL |
-| `talon_table_schema` | 查看表结构 (DESCRIBE) |
+- `talon_sql_query` — 执行任意 SQL
+- `talon_table_schema` — 查看表结构
 
-### KV
-| Tool | 说明 |
-|------|------|
-| `talon_kv_get` | 读取值 |
-| `talon_kv_set` | 写入值 |
-| `talon_kv_delete` | 删除键 |
-| `talon_kv_list` | 列出键 |
-| `talon_kv_scan` | 扫描键值对 |
-| `talon_kv_count` | 总数 |
-| `talon_kv_exists` | 检查存在 |
-| `talon_kv_incr` | 原子自增 |
+### KV (8 个)
+- `talon_kv_get/set/delete/list/scan/count/exists/incr`
 
-### MQ
-| Tool | 说明 |
-|------|------|
-| `talon_mq_topics` | 列出 topic |
-| `talon_mq_length` | 队列长度 |
-| `talon_mq_publish` | 发布消息 |
+### MQ (3 个)
+- `talon_mq_topics/length/publish`
 
-### 全文搜索 / 图 / 向量 / 地理 / 时序
-| Tool | 说明 |
-|------|------|
-| `talon_fts_search` | BM25 全文搜索 |
-| `talon_graph_count/vertex/neighbors/bfs` | 图引擎 |
-| `talon_vector_count` | 向量数量 |
-| `talon_geo_members/count/search` | 地理空间 |
-| `talon_ts_list/info` | 时序引擎 |
+### FTS / Graph / Vector / Geo / TS
+- `talon_fts_search` — BM25 全文搜索
+- `talon_graph_count/vertex/neighbors/bfs` — 图引擎
+- `talon_vector_count` — 向量引擎
+- `talon_geo_members/count/search` — 地理空间
+- `talon_ts_list/info` — 时序引擎
+
+### AI 引擎 (6 个)
+- `talon_ai_sessions/session_detail/history` — 会话管理
+- `talon_ai_memory_count/docs_list/docs_count` — 记忆和 RAG
+
+### EvoCore 进化引擎 (5 个)
+- `talon_evo_soul/personality/history/proposals/stats`
 
 ### 系统
-| Tool | 说明 |
-|------|------|
-| `talon_stats` | 数据库总览 (SHOW TABLES) |
-
-## Resources
-
-| URI | 说明 |
-|-----|------|
-| `talon://tables` | 所有表列表 |
-| `talon://connection` | 连接信息 |
+- `talon_stats` — 数据库总览
