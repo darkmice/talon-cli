@@ -168,6 +168,59 @@ talon-cli ./db --format json -c "INVALID SQL"
 | `:ai docs list` | 列出 RAG 文档 |
 | `:ai docs count` | RAG 文档数量 |
 
+### Agent 执行状态
+
+| 命令 | 说明 |
+|------|------|
+| `:agent status trace <id>` | 按 TeamTrace ID 查询当前执行状态 |
+| `:agent status plan <id>` | 按计划 ID 查询当前执行状态 |
+| `:agent checkpoint trace <id> --consumer <id> [--group <id>]` | 查询 TeamTrace 流消费位点 |
+| `:agent checkpoint plan <id> --consumer <id> [--group <id>]` | 查询计划流消费位点 |
+| `:agent watch trace <id>` | 订阅 TeamTrace 执行状态流，持续输出直到终态 |
+| `:agent watch plan <id>` | 订阅计划执行状态流，持续输出直到终态 |
+
+示例：
+
+```bash
+# 查询当前快照
+talon-cli ./db -c ":agent status trace team-trace-123"
+
+# 订阅执行中的状态流
+talon-cli ./db -c ":agent watch trace team-trace-123"
+
+# 用稳定 consumer 做断点续消费
+talon-cli ./db -c ":agent watch trace team-trace-123 --consumer desktop-pane-a"
+
+# 查询某个 consumer 当前 checkpoint
+talon-cli ./db -c ":agent checkpoint trace team-trace-123 --consumer desktop-pane-a"
+
+# 从指定 seq 恢复或重放
+talon-cli ./db -c ":agent watch trace team-trace-123 --consumer desktop-pane-a --from-seq 12"
+
+# 回放最近 5 条已确认事件
+talon-cli ./db -c ":agent watch plan plan-123 --consumer dashboard-main --replay-last 5"
+
+# JSON 模式下输出完整流式事件 envelope
+talon-cli ./db --format json -c ":agent watch plan plan-123"
+```
+
+`watch` 会输出增强后的流式事件契约，包含：
+
+- MQ 顺序元信息（`seq`、`publishedAt`）
+- 流协议元信息（`eventId`、`streamVersion`）
+- 流作用域（`scope`、`scopeId`）
+- 事件类型（`initial_snapshot`、`running_snapshot`、`progress_snapshot`、`final_snapshot`）
+- 变更子任务集合（`changedTaskIds`）
+- 稳定的 `ExecutionStatusResponse` 快照负载
+
+消费语义：
+
+- `--consumer` 用稳定 consumer 名称启用断点续消费；不指定时，CLI 会生成临时 consumer
+- `:agent checkpoint ... --consumer <id>` 可直接查看该 consumer 的 `lastAckedSeq`、`nextSeq` 和 `pendingCount`
+- `--from-seq <n>` 会把该 consumer 的下次消费位置重置到指定 seq
+- `--replay-last <n>` 会基于该 consumer 最近一次已确认位置，回放最近 `n` 条已确认事件
+- replay 会重新收到旧事件，消费侧应使用 `eventId` 做幂等去重
+
 ### EvoCore 进化引擎
 
 | 命令 | 说明 |

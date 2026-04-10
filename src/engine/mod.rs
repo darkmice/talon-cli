@@ -1,5 +1,6 @@
 //! 引擎命令处理模块。
 
+pub mod agent;
 pub mod ai;
 pub mod evo;
 pub mod fts;

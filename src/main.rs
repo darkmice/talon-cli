@@ -210,6 +210,7 @@ fn dispatch_engine(db: &talon::Talon, input: &str, fmt: OutputFormat) {
         ":ts" => engine::ts::handle(db, &parts, fmt, &HAD_ERROR),
         ":vec" => engine::vec::handle(db, &parts, fmt, &HAD_ERROR),
         ":ai" => engine::ai::handle(db, &parts, fmt, &HAD_ERROR),
+        ":agent" => engine::agent::handle(db, &parts, fmt, &HAD_ERROR),
         ":evo" => engine::evo::handle(db, &parts, fmt, &HAD_ERROR),
         _ => {
             let msg = format!("未知命令: {}。输入 :help 查看帮助。", parts[0]);
@@ -404,6 +405,15 @@ pub(crate) fn print_help() {
   :ai memory count           记忆数量
   :ai docs list              列出 RAG 文档
   :ai docs count             RAG 文档数量
+
+── Agent Runtime（talon-agent）──
+    :agent discover [query] [--category <name>] [--readonly] [--concurrency-safe] [--limit <n>]  查询内置工具目录
+    :agent status trace <id>   按 TeamTrace ID 查询执行状态
+    :agent status plan <id>    按 Plan ID 查询最新执行状态
+    :agent checkpoint trace <id> --consumer <id> [--group <id>]  查询 TeamTrace 流消费位点
+    :agent checkpoint plan <id> --consumer <id> [--group <id>]   查询 Plan 流消费位点
+    :agent watch trace <id> [--consumer <id>] [--from-seq <n>|--replay-last <n>]  订阅或回放 TeamTrace 执行状态流
+    :agent watch plan <id> [--consumer <id>] [--from-seq <n>|--replay-last <n>]   订阅或回放 Plan 执行状态流
 
 ── EvoCore 进化引擎 ──
   :evo soul                  查看 Soul 配置
