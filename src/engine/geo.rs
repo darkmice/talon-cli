@@ -59,18 +59,13 @@ pub fn handle(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicB
             }
         }
         "search" => {
-            if parts.len() < 4 {
+            if parts.len() < 6 {
                 report(had_error, fmt, ":geo search <name> <lng> <lat> <radius_m>");
                 return;
             }
-            let sub: Vec<&str> = parts[3].splitn(3, ' ').collect();
-            if sub.len() < 3 {
-                report(had_error, fmt, ":geo search <name> <lng> <lat> <radius_m>");
-                return;
-            }
-            let lng: f64 = sub[0].parse().unwrap_or(0.0);
-            let lat: f64 = sub[1].parse().unwrap_or(0.0);
-            let radius: f64 = sub[2].parse().unwrap_or(1000.0);
+            let lng: f64 = parts[3].parse().unwrap_or(0.0);
+            let lat: f64 = parts[4].parse().unwrap_or(0.0);
+            let radius: f64 = parts[5].parse().unwrap_or(1000.0);
             match db.geo_read() {
                 Ok(g) => {
                     match g.geo_search(parts[2], lng, lat, radius, talon::GeoUnit::Meters, Some(20))

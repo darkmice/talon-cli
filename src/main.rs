@@ -16,6 +16,7 @@
  *   engine/      — 引擎命令处理（11 引擎）
  */
 
+mod cmdline;
 mod daemon;
 mod engine;
 mod format;
@@ -191,7 +192,12 @@ fn execute_embedded(db: &talon::Talon, input: &str, fmt: OutputFormat) {
 
 /// 路由 `:engine subcmd ...` 到对应的引擎处理模块。
 fn dispatch_engine(db: &talon::Talon, input: &str, fmt: OutputFormat) {
-    let parts: Vec<&str> = input.splitn(4, ' ').collect();
+    // 用统一分词器（支持引号包裹、不限段数）替代写死的 splitn(4)。
+    let owned = cmdline::tokenize(input);
+    if owned.is_empty() {
+        return;
+    }
+    let parts: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
 
     match parts[0] {
         ":help" | ":h" | ":?" => {

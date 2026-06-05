@@ -100,7 +100,12 @@ pub fn input_to_json(input: &str) -> Result<String, String> {
         return Ok(cmd.to_string());
     }
 
-    let parts: Vec<&str> = trimmed.splitn(5, ' ').collect();
+    // 用统一分词器（支持引号包裹、不限段数）替代写死的 splitn(5)。
+    let owned = crate::cmdline::tokenize(trimmed);
+    if owned.is_empty() {
+        return Err("空命令".into());
+    }
+    let parts: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
     let engine = parts[0];
 
     match engine {
@@ -306,22 +311,13 @@ fn geo_to_json(parts: &[&str]) -> Result<String, String> {
             serde_json::json!({"module":"geo","action":"count","params":{"name":parts[2]}})
         }
         "search" => {
-            require_arg(parts, 5, ":geo search <name> <lng> <lat> <radius_m>")?;
-            // 需要额外 part — 改成 splitn(6, ' ')
-            // 但我们最多 5 个 part，所以 radius 从 parts[4] 中取第一个空格前的部分
-            // 实际上 parts[4] 就是 "<lat> <radius>"，需要再拆分
-            // 重新设计：使用 parts[3] = "lng", 找不到足够参数则提示
-            let lng: f64 = parts[2].parse().map_err(|_| "经度格式错误")?;
-            let lat: f64 = parts[3].parse().map_err(|_| "纬度格式错误")?;
-            // parts[4] 可能包含 "radius" 或更多内容
-            let radius: f64 = parts
-                .get(4)
-                .and_then(|s| s.split_whitespace().next())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1000.0);
+            // 分词后各参数独立成 token：name lng lat radius
+            require_arg(parts, 6, ":geo search <name> <lng> <lat> <radius_m>")?;
+            let lng: f64 = parts[3].parse().map_err(|_| "经度格式错误")?;
+            let lat: f64 = parts[4].parse().map_err(|_| "纬度格式错误")?;
+            let radius: f64 = parts[5].parse().map_err(|_| "半径格式错误")?;
             serde_json::json!({"module":"geo","action":"search","params":{
-                "name": parts.get(2).unwrap_or(&""),
-                "lng":lng, "lat":lat, "radius":radius, "unit":"m"
+                "name": parts[2], "lng":lng, "lat":lat, "radius":radius, "unit":"m"
             }})
         }
         sub => return Err(format!("未知 GEO 子命令: {}", sub)),

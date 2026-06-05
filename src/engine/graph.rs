@@ -91,15 +91,14 @@ fn cmd_neighbors(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &Atom
         report(had_error, fmt, ":graph neighbors <name> <id> [out|in|both]");
         return;
     }
-    let sub: Vec<&str> = parts[3].splitn(2, ' ').collect();
-    let id: u64 = match sub[0].parse() {
+    let id: u64 = match parts[3].parse() {
         Ok(n) => n,
         Err(_) => {
             report(had_error, fmt, "id 必须为整数");
             return;
         }
     };
-    let dir = match sub.get(1).copied().unwrap_or("out") {
+    let dir = match parts.get(4).copied().unwrap_or("out") {
         "in" => talon::Direction::In,
         "both" => talon::Direction::Both,
         _ => talon::Direction::Out,
@@ -130,15 +129,14 @@ fn cmd_bfs(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool
         report(had_error, fmt, ":graph bfs <name> <start> [depth]");
         return;
     }
-    let sub: Vec<&str> = parts[3].splitn(2, ' ').collect();
-    let start: u64 = match sub[0].parse() {
+    let start: u64 = match parts[3].parse() {
         Ok(n) => n,
         Err(_) => {
             report(had_error, fmt, "start 必须为整数");
             return;
         }
     };
-    let depth: usize = sub.get(1).and_then(|s| s.parse().ok()).unwrap_or(3);
+    let depth: usize = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(3);
     match db.graph_read() {
         Ok(g) => match g.bfs(parts[2], start, depth, talon::Direction::Out) {
             Ok(nodes) => {
