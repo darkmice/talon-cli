@@ -20,6 +20,13 @@ pub fn handle(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicB
         "exists" => cmd_exists(db, parts, fmt, had_error),
         "incr" => cmd_incr(db, parts, fmt, had_error),
         "ttl" => cmd_ttl(db, parts, fmt, had_error),
+        "expire" => cmd_expire(db, parts, fmt, had_error),
+        "incrby" => cmd_incrby(db, parts, fmt, had_error),
+        "decrby" => cmd_decrby(db, parts, fmt, had_error),
+        "setnx" => cmd_setnx(db, parts, fmt, had_error),
+        "mset" => cmd_mset(db, parts, fmt, had_error),
+        "mget" => cmd_mget(db, parts, fmt, had_error),
+        "rename" => cmd_rename(db, parts, fmt, had_error),
         _ => report(
             had_error,
             fmt,
@@ -69,16 +76,22 @@ fn cmd_get(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool
 
 fn cmd_set(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
     if parts.len() < 4 {
-        report(had_error, fmt, ":kv set <key> <value>");
+        report(had_error, fmt, ":kv set <key> <value> [--ttl <secs>]");
         return;
     }
+    // 解析可选 --ttl N
+    let ttl_secs: Option<u64> = parts
+        .iter()
+        .position(|&p| p == "--ttl")
+        .and_then(|i| parts.get(i + 1))
+        .and_then(|s| s.parse().ok());
     match db.kv() {
-        Ok(kv) => match kv.set(parts[2].as_bytes(), parts[3].as_bytes(), None) {
+        Ok(kv) => match kv.set(parts[2].as_bytes(), parts[3].as_bytes(), ttl_secs) {
             Ok(()) => {
                 if fmt == OutputFormat::Json {
                     println!(
                         "{}",
-                        serde_json::json!({"ok":true,"key":parts[2],"action":"set"})
+                        serde_json::json!({"ok":true,"key":parts[2],"action":"set","ttl_secs":ttl_secs})
                     );
                 } else {
                     println!("OK");
@@ -278,6 +291,208 @@ fn cmd_ttl(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool
                     );
                 } else {
                     println!("永久（无 TTL）");
+                }
+            }
+            Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+        },
+        Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+    }
+}
+
+fn cmd_expire(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
+    if parts.len() < 4 {
+        report(had_error, fmt, ":kv expire <key> <secs>");
+        return;
+    }
+    let secs: u64 = match parts[3].parse() {
+        Ok(n) => n,
+        Err(_) => {
+            report(had_error, fmt, "错误: <secs> 必须是非负整数");
+            return;
+        }
+    };
+    match db.kv() {
+        Ok(kv) => match kv.expire(parts[2].as_bytes(), secs) {
+            Ok(()) => {
+                if fmt == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok":true,"key":parts[2],"action":"expire","ttl_secs":secs})
+                    );
+                } else {
+                    println!("OK");
+                }
+            }
+            Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+        },
+        Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+    }
+}
+
+fn cmd_incrby(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
+    if parts.len() < 4 {
+        report(had_error, fmt, ":kv incrby <key> <delta>");
+        return;
+    }
+    let delta: i64 = match parts[3].parse() {
+        Ok(n) => n,
+        Err(_) => {
+            report(had_error, fmt, "错误: <delta> 必须是整数");
+            return;
+        }
+    };
+    match db.kv() {
+        Ok(kv) => match kv.incrby(parts[2].as_bytes(), delta) {
+            Ok(n) => {
+                if fmt == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok":true,"key":parts[2],"value":n})
+                    );
+                } else {
+                    println!("{}", n);
+                }
+            }
+            Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+        },
+        Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+    }
+}
+
+fn cmd_decrby(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
+    if parts.len() < 4 {
+        report(had_error, fmt, ":kv decrby <key> <delta>");
+        return;
+    }
+    let delta: i64 = match parts[3].parse() {
+        Ok(n) => n,
+        Err(_) => {
+            report(had_error, fmt, "错误: <delta> 必须是整数");
+            return;
+        }
+    };
+    match db.kv() {
+        Ok(kv) => match kv.decrby(parts[2].as_bytes(), delta) {
+            Ok(n) => {
+                if fmt == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok":true,"key":parts[2],"value":n})
+                    );
+                } else {
+                    println!("{}", n);
+                }
+            }
+            Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+        },
+        Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+    }
+}
+
+fn cmd_setnx(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
+    if parts.len() < 4 {
+        report(had_error, fmt, ":kv setnx <key> <value>");
+        return;
+    }
+    match db.kv() {
+        Ok(kv) => match kv.setnx(parts[2].as_bytes(), parts[3].as_bytes(), None) {
+            Ok(set) => {
+                if fmt == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok":true,"key":parts[2],"set":set})
+                    );
+                } else {
+                    println!("{}", if set { "1" } else { "0" });
+                }
+            }
+            Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+        },
+        Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+    }
+}
+
+fn cmd_mset(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
+    // parts[2..] 必须是成对的 k v k v ...
+    let kv_args = &parts[2..];
+    if kv_args.is_empty() || kv_args.len() % 2 != 0 {
+        report(had_error, fmt, ":kv mset <k1> <v1> <k2> <v2> ...（参数必须成对）");
+        return;
+    }
+    let keys: Vec<&[u8]> = kv_args.iter().step_by(2).map(|s| s.as_bytes()).collect();
+    let values: Vec<&[u8]> = kv_args.iter().skip(1).step_by(2).map(|s| s.as_bytes()).collect();
+    match db.kv() {
+        Ok(kv) => match kv.mset(&keys, &values) {
+            Ok(()) => {
+                if fmt == OutputFormat::Json {
+                    let key_strs: Vec<&str> = kv_args.iter().step_by(2).copied().collect();
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok":true,"action":"mset","count":keys.len(),"keys":key_strs})
+                    );
+                } else {
+                    println!("OK ({} 对)", keys.len());
+                }
+            }
+            Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+        },
+        Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+    }
+}
+
+fn cmd_mget(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
+    if parts.len() < 3 {
+        report(had_error, fmt, ":kv mget <k1> <k2> ...");
+        return;
+    }
+    let key_args = &parts[2..];
+    let keys: Vec<&[u8]> = key_args.iter().map(|s| s.as_bytes()).collect();
+    match db.kv_read() {
+        Ok(kv) => match kv.mget(&keys) {
+            Ok(vals) => {
+                if fmt == OutputFormat::Json {
+                    let entries: Vec<serde_json::Value> = key_args
+                        .iter()
+                        .zip(vals.iter())
+                        .map(|(k, v)| {
+                            let val = v.as_deref().map(|b| String::from_utf8_lossy(b).into_owned());
+                            serde_json::json!({"key": k, "value": val})
+                        })
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok":true,"entries":entries})
+                    );
+                } else {
+                    for (k, v) in key_args.iter().zip(vals.iter()) {
+                        match v {
+                            Some(b) => println!("{} => {}", k, String::from_utf8_lossy(b)),
+                            None => println!("{} => (nil)", k),
+                        }
+                    }
+                }
+            }
+            Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+        },
+        Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+    }
+}
+
+fn cmd_rename(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicBool) {
+    if parts.len() < 4 {
+        report(had_error, fmt, ":kv rename <src> <dst>");
+        return;
+    }
+    match db.kv() {
+        Ok(kv) => match kv.rename(parts[2].as_bytes(), parts[3].as_bytes()) {
+            Ok(()) => {
+                if fmt == OutputFormat::Json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok":true,"src":parts[2],"dst":parts[3],"action":"rename"})
+                    );
+                } else {
+                    println!("OK");
                 }
             }
             Err(e) => report(had_error, fmt, &format!("错误: {}", e)),

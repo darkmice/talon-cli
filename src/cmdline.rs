@@ -84,19 +84,24 @@ pub fn tokenize(input: &str) -> Vec<String> {
 }
 
 /// 读取第 `i` 个 token（从 0 计），越界返回 `None`。
+///
+/// 与 `arg_parse` / `require` 一同作为参数读取工具集导出，供引擎命令复用。
 #[inline]
+#[allow(dead_code)]
 pub fn arg(args: &[String], i: usize) -> Option<&str> {
     args.get(i).map(|s| s.as_str())
 }
 
 /// 读取并解析第 `i` 个 token 为类型 `T`，越界或解析失败返回 `None`。
 #[inline]
+#[allow(dead_code)]
 pub fn arg_parse<T: std::str::FromStr>(args: &[String], i: usize) -> Option<T> {
     args.get(i).and_then(|s| s.parse::<T>().ok())
 }
 
 /// 要求至少有 `min` 个 token，否则返回 `Err(usage)`。
 #[inline]
+#[allow(dead_code)]
 pub fn require(args: &[String], min: usize, usage: &str) -> Result<(), String> {
     if args.len() < min {
         Err(usage.to_string())

@@ -2,6 +2,8 @@
 
 pub mod agent;
 pub mod ai;
+pub mod backup;
+pub mod cluster;
 pub mod evo;
 pub mod fts;
 pub mod geo;

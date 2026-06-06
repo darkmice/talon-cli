@@ -92,39 +92,67 @@ talon-cli ./db --format json -c "INVALID SQL"
 
 ## 📋 命令参考
 
+> **参数引用规则**：含空格的值或 JSON 字面量请用引号包裹整段，如
+> `:kv set greeting "hello world"`、`:fts index arts d1 '{"title":"hello world"}'`。
+> 不含空格的紧凑 JSON 可裸传（`{"k":"v"}`）。
+>
+> **两模式覆盖**：除少数标注「仅嵌入」的命令外，所有命令在嵌入模式与网络模式
+> （`--connect`）下行为一致。「仅嵌入」命令在网络模式下会返回清晰提示而非报错崩溃。
+
 ### SQL
 
-```
-<SQL>;              执行 SQL（SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/...）
-<SQL1>; <SQL2>      分号分隔多条 SQL（-c 模式）
-```
+| 命令 | 说明 |
+|------|------|
+| `<SQL>;` | 直接执行裸 SQL（SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/...） |
+| `<SQL1>; <SQL2>` | 分号分隔多条 SQL（-c 模式） |
+| `:sql begin` / `commit` / `rollback` | 事务控制（事务需在同一会话内） |
+| `:sql exec <sql...>` | 执行裸 SQL（统一入口） |
+| `:sql param "<sql with ?>" <v1> <v2> ...` | 参数化查询（**仅嵌入**） |
 
 ### KV 引擎
 
 | 命令 | 说明 |
 |------|------|
 | `:kv get <key>` | 读取 |
-| `:kv set <key> <value>` | 写入 |
+| `:kv set <key> <value> [--ttl <secs>]` | 写入（可选 TTL 秒） |
 | `:kv del <key>` | 删除 |
 | `:kv keys [prefix]` | 列出 key |
 | `:kv scan <prefix> [limit]` | 扫描 key + value |
 | `:kv count` | 总 key 数量 |
 | `:kv exists <key>` | 检查是否存在 |
 | `:kv incr <key>` | 原子自增 |
+| `:kv incrby <key> <delta>` | 按 delta 自增（可负） |
+| `:kv decrby <key> <delta>` | 按 delta 自减 |
+| `:kv setnx <key> <value>` | 仅当不存在时设置 |
+| `:kv expire <key> <secs>` | 设置已有 key 的过期时间 |
 | `:kv ttl <key>` | 查看剩余 TTL |
+| `:kv mset <k1> <v1> <k2> <v2> ...` | 批量写入（参数成对） |
+| `:kv mget <k1> <k2> ...` | 批量读取 |
+| `:kv rename <src> <dst>` | 重命名键 |
 
 ### MQ 引擎
 
 | 命令 | 说明 |
 |------|------|
 | `:mq topics` | 列出所有 topic |
+| `:mq create <topic> [max_len]` | 建 topic（max_len=0 无限制） |
 | `:mq len <topic>` | 队列长度 |
 | `:mq pub <topic> <msg>` | 发布消息 |
+| `:mq poll <topic> <group> <consumer> [count]` | 消费消息（默认 10 条） |
+| `:mq ack <topic> <group> <consumer> <msg_id>` | 确认消息已消费 |
+| `:mq sub <topic> <group>` | 订阅 topic |
+| `:mq unsub <topic> <group>` | 取消订阅 |
 
 ### 全文搜索
 
 | 命令 | 说明 |
 |------|------|
+| `:fts create <name>` | 建立全文索引 |
+| `:fts drop <name>` | 删除全文索引 |
+| `:fts index <name> <doc_id> <fields_json>` | 写入/更新文档（fields 为 JSON object） |
+| `:fts get <name> <doc_id>` | 取回文档字段 |
+| `:fts del <name> <doc_id>` | 删除文档 |
+| `:fts reindex <name>` | 重建索引 |
 | `:fts search <name> <query>` | BM25 搜索 |
 
 ### 图引擎
@@ -133,14 +161,27 @@ talon-cli ./db --format json -c "INVALID SQL"
 |------|------|
 | `:graph count <name>` | 节点/边计数 |
 | `:graph vertex <name> <id>` | 查看节点 |
-| `:graph neighbors <name> <id> [dir]` | 邻居节点 |
+| `:graph neighbors <name> <id> [out\|in\|both]` | 邻居节点 |
 | `:graph bfs <name> <start> [depth]` | BFS 遍历 |
+| `:graph add-vertex <name> <label> [props_json]` | 加顶点，返回新 id |
+| `:graph add-edge <name> <from> <to> <label> [props_json]` | 加边，返回新 id |
+| `:graph update-vertex <name> <id> <props_json>` | 更新顶点属性 |
+| `:graph del-vertex <name> <id>` | 删顶点（级联删关联边） |
+| `:graph del-edge <name> <edge_id>` | 删边 |
+| `:graph edges <name> <vertex_id> [out\|in]` | 出/入边列表 |
+| `:graph path <name> <from> <to> [max_depth]` | 最短路径（默认深度 10） |
+| `:graph pagerank <name> [limit]` | PageRank top-N（默认 10） |
 
 ### 向量引擎
 
 | 命令 | 说明 |
 |------|------|
 | `:vec count <name>` | 向量索引数量 |
+| `:vec insert <name> <id> <v1,v2,...>` | 插入向量（id=u64，逗号分隔 f32） |
+| `:vec search <name> <k> <v1,v2,...>` | KNN 搜索（cosine，返回 top-k） |
+| `:vec get <name> <id>` | 取回单条向量（**仅嵌入**） |
+| `:vec delete <name> <id>` | 删除向量 |
+| `:vec rebuild <name>` | 重建 HNSW 索引（**仅嵌入**） |
 
 ### 地理空间
 
@@ -148,6 +189,11 @@ talon-cli ./db --format json -c "INVALID SQL"
 |------|------|
 | `:geo members <name>` | 列出成员 |
 | `:geo count <name>` | 成员数量 |
+| `:geo add <name> <key> <lng> <lat>` | 添加位置 |
+| `:geo del <name> <key>` | 删除位置 |
+| `:geo pos <name> <key>` | 查询坐标 |
+| `:geo dist <name> <key1> <key2> [m\|km\|mi]` | 两点距离（默认 m） |
+| `:geo hash <name> <key>` | 查询 Geohash（**仅嵌入**） |
 | `:geo search <name> <lng> <lat> <r>` | 圆形搜索 |
 
 ### 时序引擎
@@ -156,6 +202,38 @@ talon-cli ./db --format json -c "INVALID SQL"
 |------|------|
 | `:ts list` | 列出时序名称 |
 | `:ts info <name>` | 查看时序详情 |
+| `:ts create <name> <tag1,tag2> <field1,field2>` | 建时序表 |
+| `:ts insert <name> <ts_ms> <k=v,...> <k=v,...>` | 写入数据点（毫秒时间戳） |
+| `:ts query <name> [limit]` | 查询数据点 |
+| `:ts agg <name> <field> <func> <interval_ms>` | 聚合（sum/avg/min/max/count/first/last/stddev，0=全局） |
+| `:ts retention <name> <ms>` | 设保留策略（0=永久） |
+
+### 集群运维
+
+| 命令 | 说明 |
+|------|------|
+| `:cluster status` | 集群状态（角色/epoch/LSN/副本） |
+| `:cluster role` | 当前节点角色 |
+| `:cluster epoch` | 当前 epoch |
+| `:cluster promote` | 提升为 Primary |
+| `:cluster step-down <addr> <epoch>` | 降为 Replica（**仅嵌入**） |
+
+### 备份恢复
+
+| 命令 | 说明 |
+|------|------|
+| `:backup export <dir> [ks...]` | 导出快照（可选 keyspace，空=全部） |
+| `:backup import <dir>` | 从目录导入 |
+| `:backup snapshot <dir> [ts_ms]` | 一致性快照 PITR（**仅嵌入**） |
+| `:backup restore <dir> latest\|snapshot\|lsn <n>\|ts <ms>` | 恢复到指定点（**仅嵌入**） |
+
+### OpLog（仅嵌入）
+
+| 命令 | 说明 |
+|------|------|
+| `:oplog lsn` | 当前 LSN |
+| `:oplog get <lsn>` | 取单条 |
+| `:oplog range <from> <to> [limit]` | 取范围 |
 
 ### AI 引擎（talon-ai）
 

@@ -123,7 +123,12 @@ pub fn input_to_json(input: &str) -> Result<String, String> {
         ":fts" => fts_to_json(&parts),
         ":graph" => graph_to_json(&parts),
         ":geo" => geo_to_json(&parts),
-        _ => Err(format!("未知命令: {}", engine)),
+        ":cluster" => cluster_to_json(&parts),
+        ":backup" => backup_to_json(&parts),
+        ":sql" => sql_cmd_to_json(&parts),
+        ":ai" => passthrough_to_json("ai", &parts),
+        ":evo" => passthrough_to_json("evo", &parts),
+        _ => Err(format!("未知命令: {}（网络模式）", engine)),
     }
 }
 
@@ -137,8 +142,40 @@ fn kv_to_json(parts: &[&str]) -> Result<String, String> {
             serde_json::json!({"module":"kv","action":"get","params":{"key":parts[2]}})
         }
         "set" => {
-            require_arg(parts, 4, ":kv set <key> <value>")?;
-            serde_json::json!({"module":"kv","action":"set","params":{"key":parts[2],"value":parts[3]}})
+            require_arg(parts, 4, ":kv set <key> <value> [--ttl <secs>]")?;
+            let ttl: Option<u64> = parts
+                .iter()
+                .position(|&p| p == "--ttl")
+                .and_then(|i| parts.get(i + 1))
+                .and_then(|s| s.parse().ok());
+            if let Some(t) = ttl {
+                serde_json::json!({"module":"kv","action":"set","params":{"key":parts[2],"value":parts[3],"ttl":t}})
+            } else {
+                serde_json::json!({"module":"kv","action":"set","params":{"key":parts[2],"value":parts[3]}})
+            }
+        }
+        "expire" => {
+            require_arg(parts, 4, ":kv expire <key> <secs>")?;
+            let secs: u64 = parts[3].parse().map_err(|_| "secs 须为非负整数".to_string())?;
+            serde_json::json!({"module":"kv","action":"expire","params":{"key":parts[2],"seconds":secs}})
+        }
+        "mset" => {
+            let kv_args = &parts[2..];
+            if kv_args.is_empty() || kv_args.len() % 2 != 0 {
+                return Err(":kv mset <k1> <v1> ...（参数必须成对）".into());
+            }
+            let keys: Vec<&str> = kv_args.iter().step_by(2).copied().collect();
+            let values: Vec<&str> = kv_args.iter().skip(1).step_by(2).copied().collect();
+            serde_json::json!({"module":"kv","action":"mset","params":{"keys":keys,"values":values}})
+        }
+        "mget" => {
+            require_arg(parts, 3, ":kv mget <k1> <k2> ...")?;
+            let keys: Vec<&str> = parts[2..].to_vec();
+            serde_json::json!({"module":"kv","action":"mget","params":{"keys":keys}})
+        }
+        "rename" => {
+            require_arg(parts, 4, ":kv rename <src> <dst>")?;
+            serde_json::json!({"module":"kv","action":"rename","params":{"src":parts[2],"dst":parts[3]}})
         }
         "del" => {
             require_arg(parts, 3, ":kv del <key>")?;
@@ -201,6 +238,33 @@ fn mq_to_json(parts: &[&str]) -> Result<String, String> {
             require_arg(parts, 4, ":mq pub <topic> <message>")?;
             serde_json::json!({"module":"mq","action":"publish","params":{"topic":parts[2],"payload":parts[3]}})
         }
+        "create" => {
+            require_arg(parts, 3, ":mq create <topic> [max_len]")?;
+            let max_len: u64 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+            serde_json::json!({"module":"mq","action":"create","params":{"topic":parts[2],"max_len":max_len}})
+        }
+        "poll" => {
+            require_arg(parts, 5, ":mq poll <topic> <group> <consumer> [count]")?;
+            let count: u64 = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(10);
+            serde_json::json!({"module":"mq","action":"poll","params":{
+                "topic":parts[2],"group":parts[3],"consumer":parts[4],"count":count
+            }})
+        }
+        "ack" => {
+            require_arg(parts, 6, ":mq ack <topic> <group> <consumer> <msg_id>")?;
+            let message_id: u64 = parts[5].parse().map_err(|_| "msg_id 须为整数".to_string())?;
+            serde_json::json!({"module":"mq","action":"ack","params":{
+                "topic":parts[2],"group":parts[3],"consumer":parts[4],"message_id":message_id
+            }})
+        }
+        "sub" => {
+            require_arg(parts, 4, ":mq sub <topic> <group>")?;
+            serde_json::json!({"module":"mq","action":"subscribe","params":{"topic":parts[2],"group":parts[3]}})
+        }
+        "unsub" => {
+            require_arg(parts, 4, ":mq unsub <topic> <group>")?;
+            serde_json::json!({"module":"mq","action":"unsubscribe","params":{"topic":parts[2],"group":parts[3]}})
+        }
         sub => return Err(format!("未知 MQ 子命令: {}", sub)),
     };
     Ok(json.to_string())
@@ -218,14 +282,34 @@ fn vec_to_json(parts: &[&str]) -> Result<String, String> {
         "search" => {
             require_arg(parts, 5, ":vec search <name> <k> <v1,v2,...>")?;
             let k: usize = parts[3].parse().unwrap_or(10);
-            let vec_str = parts[4];
-            let vec_vals: Vec<f32> = vec_str
+            let vec_vals: Vec<f32> = parts[4]
                 .split(',')
                 .filter_map(|s| s.trim().parse().ok())
                 .collect();
+            // server exec_vector 读 "vector" 字段（非 "query"）
             serde_json::json!({"module":"vector","action":"search","params":{
-                "name":parts[2], "k":k, "query": vec_vals, "metric":"cosine"
+                "name":parts[2], "k":k, "vector": vec_vals, "metric":"cosine"
             }})
+        }
+        "insert" => {
+            require_arg(parts, 5, ":vec insert <name> <id> <v1,v2,...>")?;
+            let id: u64 = parts[3].parse().map_err(|_| "id 须为整数".to_string())?;
+            let vec_vals: Vec<f32> = parts[4]
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            serde_json::json!({"module":"vector","action":"insert","params":{
+                "name":parts[2], "id":id, "vector":vec_vals
+            }})
+        }
+        "delete" => {
+            require_arg(parts, 4, ":vec delete <name> <id>")?;
+            let id: u64 = parts[3].parse().map_err(|_| "id 须为整数".to_string())?;
+            serde_json::json!({"module":"vector","action":"delete","params":{"name":parts[2],"id":id}})
+        }
+        // get / rebuild: server exec_vector 暂未实现，仅嵌入模式可用
+        "get" | "rebuild" => {
+            return Err(format!(":vec {} 仅嵌入模式可用（服务端暂未提供该接口）", parts[1]));
         }
         sub => return Err(format!("未知 Vec 子命令: {}", sub)),
     };
@@ -244,7 +328,45 @@ fn ts_to_json(parts: &[&str]) -> Result<String, String> {
         }
         "query" => {
             require_arg(parts, 3, ":ts query <name>")?;
-            serde_json::json!({"module":"ts","action":"query","params":{"name":parts[2]}})
+            let limit: Option<u64> = parts.get(3).and_then(|s| s.parse().ok());
+            serde_json::json!({"module":"ts","action":"query","params":{"name":parts[2],"limit":limit}})
+        }
+        "create" => {
+            require_arg(parts, 5, ":ts create <name> <tags> <fields>")?;
+            let tags: Vec<&str> = parts[3].split(',').filter(|s| !s.is_empty()).collect();
+            let fields: Vec<&str> = parts[4].split(',').filter(|s| !s.is_empty()).collect();
+            serde_json::json!({"module":"ts","action":"create","params":{
+                "name":parts[2],"tags":tags,"fields":fields
+            }})
+        }
+        "insert" => {
+            require_arg(parts, 6, ":ts insert <name> <ts_ms> <k=v,...> <k=v,...>")?;
+            let ts_ms: i64 = parts[3].parse().map_err(|_| "ts_ms 须为整数".to_string())?;
+            let to_obj = |s: &str| -> serde_json::Map<String, serde_json::Value> {
+                s.split(',')
+                    .filter_map(|kv| kv.split_once('='))
+                    .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+                    .collect()
+            };
+            let tags = serde_json::Value::Object(to_obj(parts[4]));
+            let fields = serde_json::Value::Object(to_obj(parts[5]));
+            serde_json::json!({"module":"ts","action":"insert","params":{
+                "name":parts[2],
+                "point":{"timestamp":ts_ms,"tags":tags,"fields":fields}
+            }})
+        }
+        "agg" => {
+            require_arg(parts, 6, ":ts agg <name> <field> <func> <interval_ms>")?;
+            let interval: i64 = parts[5].parse().map_err(|_| "interval_ms 须为整数".to_string())?;
+            serde_json::json!({"module":"ts","action":"aggregate","params":{
+                "name":parts[2],"field":parts[3],"func":parts[4],
+                "interval_ms": if interval > 0 { Some(interval) } else { None::<i64> }
+            }})
+        }
+        "retention" => {
+            require_arg(parts, 4, ":ts retention <name> <ms>")?;
+            let ms: u64 = parts[3].parse().map_err(|_| "ms 须为非负整数".to_string())?;
+            serde_json::json!({"module":"ts","action":"set_retention","params":{"name":parts[2],"retention_ms":ms}})
         }
         sub => return Err(format!("未知 TS 子命令: {}", sub)),
     };
@@ -258,7 +380,36 @@ fn fts_to_json(parts: &[&str]) -> Result<String, String> {
     let json = match parts[1] {
         "search" => {
             require_arg(parts, 4, ":fts search <name> <query>")?;
-            serde_json::json!({"module":"fts","action":"search","params":{"index":parts[2],"query":parts[3]}})
+            // server exec_fts 读 "name"/"query" 字段（旧代码误用 "index"，已修正）
+            serde_json::json!({"module":"fts","action":"search","params":{"name":parts[2],"query":parts[3]}})
+        }
+        "create" => {
+            require_arg(parts, 3, ":fts create <name>")?;
+            serde_json::json!({"module":"fts","action":"create_index","params":{"name":parts[2]}})
+        }
+        "drop" => {
+            require_arg(parts, 3, ":fts drop <name>")?;
+            serde_json::json!({"module":"fts","action":"drop_index","params":{"name":parts[2]}})
+        }
+        "index" => {
+            require_arg(parts, 5, ":fts index <name> <doc_id> <fields_json>")?;
+            let fields: serde_json::Value =
+                serde_json::from_str(parts[4]).map_err(|e| format!("fields JSON 解析失败: {}", e))?;
+            serde_json::json!({"module":"fts","action":"index","params":{
+                "name":parts[2],"doc_id":parts[3],"fields":fields
+            }})
+        }
+        "get" => {
+            require_arg(parts, 4, ":fts get <name> <doc_id>")?;
+            serde_json::json!({"module":"fts","action":"get","params":{"name":parts[2],"doc_id":parts[3]}})
+        }
+        "del" => {
+            require_arg(parts, 4, ":fts del <name> <doc_id>")?;
+            serde_json::json!({"module":"fts","action":"delete","params":{"name":parts[2],"doc_id":parts[3]}})
+        }
+        "reindex" => {
+            require_arg(parts, 3, ":fts reindex <name>")?;
+            serde_json::json!({"module":"fts","action":"reindex","params":{"name":parts[2]}})
         }
         sub => return Err(format!("未知 FTS 子命令: {}", sub)),
     };
@@ -287,9 +438,69 @@ fn graph_to_json(parts: &[&str]) -> Result<String, String> {
         }
         "bfs" => {
             require_arg(parts, 4, ":graph bfs <name> <start>")?;
-            let depth: u32 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(3);
+            let start: u64 = parts[3].parse().map_err(|_| "start 须为整数".to_string())?;
+            let depth: u64 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(3);
             serde_json::json!({"module":"graph","action":"bfs","params":{
-                "name":parts[2],"start":parts[3],"depth":depth
+                "graph":parts[2],"start":start,"max_depth":depth
+            }})
+        }
+        "add-vertex" => {
+            require_arg(parts, 4, ":graph add-vertex <name> <label> [props_json]")?;
+            let props = parse_props_value(parts.get(4).copied())?;
+            serde_json::json!({"module":"graph","action":"add_vertex","params":{
+                "graph":parts[2],"label":parts[3],"properties":props
+            }})
+        }
+        "add-edge" => {
+            require_arg(parts, 6, ":graph add-edge <name> <from> <to> <label> [props_json]")?;
+            let from: u64 = parts[3].parse().map_err(|_| "from 须为整数".to_string())?;
+            let to: u64 = parts[4].parse().map_err(|_| "to 须为整数".to_string())?;
+            let props = parse_props_value(parts.get(6).copied())?;
+            serde_json::json!({"module":"graph","action":"add_edge","params":{
+                "graph":parts[2],"from":from,"to":to,"label":parts[5],"properties":props
+            }})
+        }
+        "update-vertex" => {
+            require_arg(parts, 5, ":graph update-vertex <name> <id> <props_json>")?;
+            let id: u64 = parts[3].parse().map_err(|_| "id 须为整数".to_string())?;
+            let props = parse_props_value(parts.get(4).copied())?;
+            serde_json::json!({"module":"graph","action":"update_vertex","params":{
+                "graph":parts[2],"id":id,"properties":props
+            }})
+        }
+        "del-vertex" => {
+            require_arg(parts, 4, ":graph del-vertex <name> <id>")?;
+            let id: u64 = parts[3].parse().map_err(|_| "id 须为整数".to_string())?;
+            serde_json::json!({"module":"graph","action":"delete_vertex","params":{"graph":parts[2],"id":id}})
+        }
+        "del-edge" => {
+            require_arg(parts, 4, ":graph del-edge <name> <edge_id>")?;
+            let id: u64 = parts[3].parse().map_err(|_| "edge_id 须为整数".to_string())?;
+            serde_json::json!({"module":"graph","action":"delete_edge","params":{"graph":parts[2],"id":id}})
+        }
+        "edges" => {
+            require_arg(parts, 4, ":graph edges <name> <vertex_id> [out|in]")?;
+            let id: u64 = parts[3].parse().map_err(|_| "vertex_id 须为整数".to_string())?;
+            let action = match parts.get(4).copied().unwrap_or("out") {
+                "in" => "in_edges",
+                _ => "out_edges",
+            };
+            serde_json::json!({"module":"graph","action":action,"params":{"graph":parts[2],"id":id}})
+        }
+        "path" => {
+            require_arg(parts, 5, ":graph path <name> <from> <to> [max_depth]")?;
+            let from: u64 = parts[3].parse().map_err(|_| "from 须为整数".to_string())?;
+            let to: u64 = parts[4].parse().map_err(|_| "to 须为整数".to_string())?;
+            let max_depth: u64 = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(10);
+            serde_json::json!({"module":"graph","action":"shortest_path","params":{
+                "graph":parts[2],"from":from,"to":to,"max_depth":max_depth
+            }})
+        }
+        "pagerank" => {
+            require_arg(parts, 3, ":graph pagerank <name> [limit]")?;
+            let limit: u64 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+            serde_json::json!({"module":"graph","action":"pagerank","params":{
+                "graph":parts[2],"damping":0.85,"iterations":20,"limit":limit
             }})
         }
         sub => return Err(format!("未知 Graph 子命令: {}", sub)),
@@ -320,9 +531,139 @@ fn geo_to_json(parts: &[&str]) -> Result<String, String> {
                 "name": parts[2], "lng":lng, "lat":lat, "radius":radius, "unit":"m"
             }})
         }
+        "add" => {
+            require_arg(parts, 6, ":geo add <name> <key> <lng> <lat>")?;
+            let lng: f64 = parts[4].parse().map_err(|_| "经度格式错误".to_string())?;
+            let lat: f64 = parts[5].parse().map_err(|_| "纬度格式错误".to_string())?;
+            serde_json::json!({"module":"geo","action":"add","params":{
+                "name":parts[2],"key":parts[3],"lng":lng,"lat":lat
+            }})
+        }
+        "del" => {
+            require_arg(parts, 4, ":geo del <name> <key>")?;
+            serde_json::json!({"module":"geo","action":"del","params":{"name":parts[2],"key":parts[3]}})
+        }
+        "pos" => {
+            require_arg(parts, 4, ":geo pos <name> <key>")?;
+            serde_json::json!({"module":"geo","action":"pos","params":{"name":parts[2],"key":parts[3]}})
+        }
+        "dist" => {
+            require_arg(parts, 5, ":geo dist <name> <key1> <key2> [m|km|mi]")?;
+            let unit = parts.get(5).copied().unwrap_or("m");
+            serde_json::json!({"module":"geo","action":"dist","params":{
+                "name":parts[2],"key1":parts[3],"key2":parts[4],"unit":unit
+            }})
+        }
+        // hash: server exec_geo 暂未实现，仅嵌入模式可用
+        "hash" => {
+            return Err(":geo hash 仅嵌入模式可用（服务端暂未提供该接口）".into());
+        }
         sub => return Err(format!("未知 GEO 子命令: {}", sub)),
     };
     Ok(json.to_string())
+}
+
+/// 集群运维命令 → JSON。
+/// server exec_cluster 支持 status/role/promote/replicas（无 params）；
+/// epoch 走 status 取字段，step-down 仅嵌入模式（需带 addr+epoch 参数）。
+fn cluster_to_json(parts: &[&str]) -> Result<String, String> {
+    if parts.len() < 2 {
+        return Err(":cluster 需要子命令".into());
+    }
+    let json = match parts[1] {
+        "status" | "epoch" => serde_json::json!({"module":"cluster","action":"status","params":{}}),
+        "role" => serde_json::json!({"module":"cluster","action":"role","params":{}}),
+        "promote" => serde_json::json!({"module":"cluster","action":"promote","params":{}}),
+        "replicas" => serde_json::json!({"module":"cluster","action":"replicas","params":{}}),
+        "step-down" => {
+            return Err(":cluster step-down 仅嵌入模式可用（网络模式不支持带参数的集群操作）".into())
+        }
+        sub => return Err(format!("未知 cluster 子命令: {}", sub)),
+    };
+    Ok(json.to_string())
+}
+
+/// 备份命令 → JSON。
+/// server exec_backup 仅支持 export/import；snapshot/restore 仅嵌入模式。
+fn backup_to_json(parts: &[&str]) -> Result<String, String> {
+    if parts.len() < 2 {
+        return Err(":backup 需要子命令".into());
+    }
+    let json = match parts[1] {
+        "export" => {
+            require_arg(parts, 3, ":backup export <dir> [ks...]")?;
+            let keyspaces: Vec<&str> = parts[3..].to_vec();
+            serde_json::json!({"module":"backup","action":"export","params":{
+                "dir":parts[2],"keyspaces":keyspaces
+            }})
+        }
+        "import" => {
+            require_arg(parts, 3, ":backup import <dir>")?;
+            serde_json::json!({"module":"backup","action":"import","params":{"dir":parts[2]}})
+        }
+        "snapshot" | "restore" => {
+            return Err(format!(
+                ":backup {} 仅嵌入模式可用（服务端暂未提供该接口）",
+                parts[1]
+            ))
+        }
+        sub => return Err(format!("未知 backup 子命令: {}", sub)),
+    };
+    Ok(json.to_string())
+}
+
+/// SQL 事务命令 → JSON（begin/commit/rollback 翻成裸 SQL 帧）。
+/// :sql param 仅嵌入模式（服务端 exec_sql 不读 bind 字段）。
+fn sql_cmd_to_json(parts: &[&str]) -> Result<String, String> {
+    let sub = parts.get(1).copied().unwrap_or("");
+    let sql = match sub {
+        "begin" => "BEGIN",
+        "commit" => "COMMIT",
+        "rollback" => "ROLLBACK",
+        "param" => return Err(":sql param 仅嵌入模式可用（网络模式不支持参数化绑定）".into()),
+        "exec" => {
+            return Err(":sql exec 网络模式请直接输入裸 SQL（不加 :sql 前缀）".into())
+        }
+        other => return Err(format!("未知 :sql 子命令: {}", other)),
+    };
+    Ok(serde_json::json!({"module":"sql","action":"query","params":{"sql":sql}}).to_string())
+}
+
+/// AI / EvoCore 引擎命令透传 → JSON。
+/// 这两个引擎在服务端 ffi_exec 已注册 handler（未授权时返回付费提示，cli 透传）。
+/// 协议：`:ai <action> [k=v ...]` → {"module":"ai","action":<action>,"params":{...}}。
+fn passthrough_to_json(module: &str, parts: &[&str]) -> Result<String, String> {
+    if parts.len() < 2 {
+        return Err(format!(":{} 需要子命令", module));
+    }
+    let action = parts[1];
+    // 其余 k=v token 作为 params，裸 token 收进 args 数组
+    let mut params = serde_json::Map::new();
+    let mut args: Vec<&str> = Vec::new();
+    for &tok in &parts[2..] {
+        if let Some((k, v)) = tok.split_once('=') {
+            params.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+        } else {
+            args.push(tok);
+        }
+    }
+    if !args.is_empty() {
+        params.insert(
+            "args".to_string(),
+            serde_json::Value::Array(args.into_iter().map(|s| serde_json::json!(s)).collect()),
+        );
+    }
+    Ok(serde_json::json!({"module":module,"action":action,"params":params}).to_string())
+}
+
+/// 把可选的 props_json 参数解析为 JSON Value object（图属性用）。
+/// 未提供 → 空 object；提供但非法 JSON → Err。
+fn parse_props_value(raw: Option<&str>) -> Result<serde_json::Value, String> {
+    match raw {
+        None => Ok(serde_json::json!({})),
+        Some(s) => serde_json::from_str::<serde_json::Value>(s)
+            .map_err(|e| format!("属性 JSON 解析失败: {}", e)),
+    }
 }
 
 #[inline]

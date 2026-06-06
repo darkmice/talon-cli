@@ -58,6 +58,173 @@ pub fn handle(db: &Talon, parts: &[&str], fmt: OutputFormat, had_error: &AtomicB
                 Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
             }
         }
+        "add" => {
+            if parts.len() < 6 {
+                report(had_error, fmt, ":geo add <name> <key> <lng> <lat>");
+                return;
+            }
+            let lng: f64 = match parts[4].parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    report(had_error, fmt, &format!("经度解析失败: {}", parts[4]));
+                    return;
+                }
+            };
+            let lat: f64 = match parts[5].parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    report(had_error, fmt, &format!("纬度解析失败: {}", parts[5]));
+                    return;
+                }
+            };
+            match db.geo() {
+                Ok(g) => match g.geo_add(parts[2], parts[3], lng, lat) {
+                    Ok(()) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key":parts[3],"lng":lng,"lat":lat})
+                            );
+                        } else {
+                            println!("已添加 {} → ({}, {})", parts[3], lng, lat);
+                        }
+                    }
+                    Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+                },
+                Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+            }
+        }
+        "del" => {
+            if parts.len() < 4 {
+                report(had_error, fmt, ":geo del <name> <key>");
+                return;
+            }
+            match db.geo() {
+                Ok(g) => match g.geo_del(parts[2], parts[3]) {
+                    Ok(deleted) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key":parts[3],"deleted":deleted})
+                            );
+                        } else if deleted {
+                            println!("已删除 {}", parts[3]);
+                        } else {
+                            println!("未找到成员: {}", parts[3]);
+                        }
+                    }
+                    Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+                },
+                Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+            }
+        }
+        "pos" => {
+            if parts.len() < 4 {
+                report(had_error, fmt, ":geo pos <name> <key>");
+                return;
+            }
+            match db.geo_read() {
+                Ok(g) => match g.geo_pos(parts[2], parts[3]) {
+                    Ok(Some(p)) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key":parts[3],"lng":p.lng,"lat":p.lat})
+                            );
+                        } else {
+                            println!("{}: ({}, {})", parts[3], p.lng, p.lat);
+                        }
+                    }
+                    Ok(None) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key":parts[3],"found":false})
+                            );
+                        } else {
+                            println!("未找到成员: {}", parts[3]);
+                        }
+                    }
+                    Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+                },
+                Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+            }
+        }
+        "dist" => {
+            if parts.len() < 5 {
+                report(had_error, fmt, ":geo dist <name> <key1> <key2> [m|km|mi]");
+                return;
+            }
+            let unit_str = if parts.len() >= 6 { parts[5] } else { "m" };
+            let unit = match unit_str {
+                "km" => talon::GeoUnit::Kilometers,
+                "mi" => talon::GeoUnit::Miles,
+                _ => talon::GeoUnit::Meters,
+            };
+            let unit_label = match unit_str {
+                "km" => "km",
+                "mi" => "mi",
+                _ => "m",
+            };
+            match db.geo_read() {
+                Ok(g) => match g.geo_dist(parts[2], parts[3], parts[4], unit) {
+                    Ok(Some(d)) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key1":parts[3],"key2":parts[4],"dist":d,"unit":unit_label})
+                            );
+                        } else {
+                            println!("{:.4} {}", d, unit_label);
+                        }
+                    }
+                    Ok(None) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key1":parts[3],"key2":parts[4],"found":false})
+                            );
+                        } else {
+                            println!("未找到成员（一个或两个均不存在）");
+                        }
+                    }
+                    Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+                },
+                Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+            }
+        }
+        "hash" => {
+            if parts.len() < 4 {
+                report(had_error, fmt, ":geo hash <name> <key>");
+                return;
+            }
+            match db.geo_read() {
+                Ok(g) => match g.geo_hash(parts[2], parts[3]) {
+                    Ok(Some(h)) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key":parts[3],"hash":h})
+                            );
+                        } else {
+                            println!("{}", h);
+                        }
+                    }
+                    Ok(None) => {
+                        if fmt == OutputFormat::Json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"ok":true,"name":parts[2],"key":parts[3],"found":false})
+                            );
+                        } else {
+                            println!("未找到成员: {}", parts[3]);
+                        }
+                    }
+                    Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+                },
+                Err(e) => report(had_error, fmt, &format!("错误: {}", e)),
+            }
+        }
         "search" => {
             if parts.len() < 6 {
                 report(had_error, fmt, ":geo search <name> <lng> <lat> <radius_m>");
