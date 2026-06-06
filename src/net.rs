@@ -127,6 +127,7 @@ pub fn input_to_json(input: &str) -> Result<String, String> {
         ":geo" => geo_to_json(&parts),
         ":cluster" => cluster_to_json(&parts),
         ":backup" => backup_to_json(&parts),
+        ":oplog" => oplog_to_json(&parts),
         ":sql" => sql_cmd_to_json(&parts),
         ":ai" => passthrough_to_json("ai", &parts),
         ":evo" => passthrough_to_json("evo", &parts),
@@ -312,9 +313,14 @@ fn vec_to_json(parts: &[&str]) -> Result<String, String> {
             let id: u64 = parts[3].parse().map_err(|_| "id 须为整数".to_string())?;
             serde_json::json!({"module":"vector","action":"delete","params":{"name":parts[2],"id":id}})
         }
-        // get / rebuild: server exec_vector 暂未实现，仅嵌入模式可用
-        "get" | "rebuild" => {
-            return Err(format!(":vec {} 仅嵌入模式可用（服务端暂未提供该接口）", parts[1]));
+        "get" => {
+            require_arg(parts, 4, ":vec get <name> <id>")?;
+            let id: u64 = parts[3].parse().map_err(|_| "id 须为整数".to_string())?;
+            serde_json::json!({"module":"vector","action":"get_vector","params":{"name":parts[2],"id":id}})
+        }
+        "rebuild" => {
+            require_arg(parts, 3, ":vec rebuild <name>")?;
+            serde_json::json!({"module":"vector","action":"rebuild_index","params":{"name":parts[2]}})
         }
         sub => return Err(format!("未知 Vec 子命令: {}", sub)),
     };
@@ -559,9 +565,9 @@ fn geo_to_json(parts: &[&str]) -> Result<String, String> {
                 "name":parts[2],"key1":parts[3],"key2":parts[4],"unit":unit
             }})
         }
-        // hash: server exec_geo 暂未实现，仅嵌入模式可用
         "hash" => {
-            return Err(":geo hash 仅嵌入模式可用（服务端暂未提供该接口）".into());
+            require_arg(parts, 4, ":geo hash <name> <key>")?;
+            serde_json::json!({"module":"geo","action":"hash","params":{"name":parts[2],"key":parts[3]}})
         }
         sub => return Err(format!("未知 GEO 子命令: {}", sub)),
     };
@@ -570,7 +576,7 @@ fn geo_to_json(parts: &[&str]) -> Result<String, String> {
 
 /// 集群运维命令 → JSON。
 /// server exec_cluster 支持 status/role/promote/replicas（无 params）；
-/// epoch 走 status 取字段，step-down 仅嵌入模式（需带 addr+epoch 参数）。
+/// epoch 走 status 取字段；step-down 发 new_primary/epoch 给 server。
 fn cluster_to_json(parts: &[&str]) -> Result<String, String> {
     if parts.len() < 2 {
         return Err(":cluster 需要子命令".into());
@@ -581,7 +587,11 @@ fn cluster_to_json(parts: &[&str]) -> Result<String, String> {
         "promote" => serde_json::json!({"module":"cluster","action":"promote","params":{}}),
         "replicas" => serde_json::json!({"module":"cluster","action":"replicas","params":{}}),
         "step-down" => {
-            return Err(":cluster step-down 仅嵌入模式可用（网络模式不支持带参数的集群操作）".into())
+            require_arg(parts, 4, ":cluster step-down <new_primary_addr> <epoch>")?;
+            let epoch: u64 = parts[3].parse().map_err(|_| "epoch 须为非负整数".to_string())?;
+            serde_json::json!({"module":"cluster","action":"step_down","params":{
+                "new_primary":parts[2],"epoch":epoch
+            }})
         }
         sub => return Err(format!("未知 cluster 子命令: {}", sub)),
     };
@@ -589,7 +599,7 @@ fn cluster_to_json(parts: &[&str]) -> Result<String, String> {
 }
 
 /// 备份命令 → JSON。
-/// server exec_backup 仅支持 export/import；snapshot/restore 仅嵌入模式。
+/// server exec_backup 支持 export/import/consistent/restore（PITR）。
 fn backup_to_json(parts: &[&str]) -> Result<String, String> {
     if parts.len() < 2 {
         return Err(":backup 需要子命令".into());
@@ -606,11 +616,41 @@ fn backup_to_json(parts: &[&str]) -> Result<String, String> {
             require_arg(parts, 3, ":backup import <dir>")?;
             serde_json::json!({"module":"backup","action":"import","params":{"dir":parts[2]}})
         }
-        "snapshot" | "restore" => {
-            return Err(format!(
-                ":backup {} 仅嵌入模式可用（服务端暂未提供该接口）",
-                parts[1]
-            ))
+        "snapshot" => {
+            require_arg(parts, 3, ":backup snapshot <dir> [ts_ms]")?;
+            let ts: u64 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+            serde_json::json!({"module":"backup","action":"consistent","params":{
+                "dir":parts[2],"timestamp_ms":ts
+            }})
+        }
+        "restore" => {
+            require_arg(parts, 4, ":backup restore <dir> latest|snapshot|lsn <n>|ts <ms>")?;
+            let mut params = serde_json::Map::new();
+            params.insert("dir".into(), serde_json::json!(parts[2]));
+            match parts[3] {
+                "latest" => {
+                    params.insert("target".into(), serde_json::json!("latest"));
+                }
+                "snapshot" => {
+                    params.insert("target".into(), serde_json::json!("snapshot"));
+                }
+                "lsn" => {
+                    let n: u64 = parts
+                        .get(4)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| "lsn 后需提供整数".to_string())?;
+                    params.insert("lsn".into(), serde_json::json!(n));
+                }
+                "ts" => {
+                    let ms: u64 = parts
+                        .get(4)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| "ts 后需提供毫秒整数".to_string())?;
+                    params.insert("timestamp_ms".into(), serde_json::json!(ms));
+                }
+                other => return Err(format!("未知 restore 目标: {}（用 latest|snapshot|lsn|ts）", other)),
+            }
+            serde_json::json!({"module":"backup","action":"restore","params":params})
         }
         sub => return Err(format!("未知 backup 子命令: {}", sub)),
     };
@@ -618,20 +658,71 @@ fn backup_to_json(parts: &[&str]) -> Result<String, String> {
 }
 
 /// SQL 事务命令 → JSON（begin/commit/rollback 翻成裸 SQL 帧）。
-/// :sql param 仅嵌入模式（服务端 exec_sql 不读 bind 字段）。
+/// SQL 子命令 → JSON。begin/commit/rollback 走裸 SQL 帧；
+/// param 走 exec_sql 的 bind 字段（服务端已支持参数化）。
 fn sql_cmd_to_json(parts: &[&str]) -> Result<String, String> {
     let sub = parts.get(1).copied().unwrap_or("");
-    let sql = match sub {
-        "begin" => "BEGIN",
-        "commit" => "COMMIT",
-        "rollback" => "ROLLBACK",
-        "param" => return Err(":sql param 仅嵌入模式可用（网络模式不支持参数化绑定）".into()),
-        "exec" => {
-            return Err(":sql exec 网络模式请直接输入裸 SQL（不加 :sql 前缀）".into())
+    match sub {
+        "begin" | "commit" | "rollback" => {
+            let sql = match sub {
+                "begin" => "BEGIN",
+                "commit" => "COMMIT",
+                _ => "ROLLBACK",
+            };
+            Ok(serde_json::json!({"module":"sql","action":"query","params":{"sql":sql}}).to_string())
         }
-        other => return Err(format!("未知 :sql 子命令: {}", other)),
+        "param" => {
+            // :sql param "<sql with ?>" <v1> <v2> ...
+            require_arg(parts, 3, ":sql param \"<sql>\" [v1 v2 ...]")?;
+            let sql = parts[2];
+            // 把参数转成 Value 的 JSON 编码（{"Integer":n}/{"Float":f}/{"Text":s}）
+            let bind: Vec<serde_json::Value> = parts[3..].iter().map(|s| value_to_bind(s)).collect();
+            Ok(serde_json::json!({"module":"sql","action":"query","params":{
+                "sql":sql,"bind":bind
+            }})
+            .to_string())
+        }
+        "exec" => Err(":sql exec 网络模式请直接输入裸 SQL（不加 :sql 前缀）".into()),
+        other => Err(format!("未知 :sql 子命令: {}", other)),
+    }
+}
+
+/// 把命令行字符串参数转成 talon::Value 的 JSON 编码（与 server Value Deserialize 对齐）。
+/// 能 parse i64 → Integer，能 parse f64 → Float，否则 → Text。
+fn value_to_bind(s: &str) -> serde_json::Value {
+    if let Ok(n) = s.parse::<i64>() {
+        serde_json::json!({ "Integer": n })
+    } else if let Ok(f) = s.parse::<f64>() {
+        serde_json::json!({ "Float": f })
+    } else {
+        serde_json::json!({ "Text": s })
+    }
+}
+
+/// OpLog 命令 → JSON。server exec_oplog 支持 current_lsn/get/range。
+fn oplog_to_json(parts: &[&str]) -> Result<String, String> {
+    if parts.len() < 2 {
+        return Err(":oplog 需要子命令".into());
+    }
+    let json = match parts[1] {
+        "lsn" => serde_json::json!({"module":"oplog","action":"current_lsn","params":{}}),
+        "get" => {
+            require_arg(parts, 3, ":oplog get <lsn>")?;
+            let lsn: u64 = parts[2].parse().map_err(|_| "lsn 须为整数".to_string())?;
+            serde_json::json!({"module":"oplog","action":"get","params":{"lsn":lsn}})
+        }
+        "range" => {
+            require_arg(parts, 4, ":oplog range <from> <to> [limit]")?;
+            let from: u64 = parts[2].parse().map_err(|_| "from 须为整数".to_string())?;
+            let to: u64 = parts[3].parse().map_err(|_| "to 须为整数".to_string())?;
+            let limit: u64 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(100);
+            serde_json::json!({"module":"oplog","action":"range","params":{
+                "from":from,"to":to,"limit":limit
+            }})
+        }
+        sub => return Err(format!("未知 oplog 子命令: {}", sub)),
     };
-    Ok(serde_json::json!({"module":"sql","action":"query","params":{"sql":sql}}).to_string())
+    Ok(json.to_string())
 }
 
 /// AI / EvoCore 引擎命令透传 → JSON。

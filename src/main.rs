@@ -372,13 +372,13 @@ pub(crate) fn print_help() {
     :kv set greeting "hello world"
     :fts index arts d1 '{{"title":"hello world"}}'
   不含空格的紧凑 JSON 可裸传，例：{{"k":"v"}}。
-  除标注「仅嵌入」的命令外，所有命令在嵌入/网络模式行为一致。
+  所有命令在嵌入模式与网络模式（--connect）下行为一致。
 
 ── SQL 引擎 ──
   <sql>;                                       直接执行裸 SQL
   :sql begin / commit / rollback               事务控制
   :sql exec <sql...>                           执行裸 SQL（统一入口）
-  :sql param "<sql with ?>" <v1> <v2> ...      参数化查询（仅嵌入模式）
+  :sql param "<sql with ?>" <v1> <v2> ...      参数化查询（? 占位绑定）
 
 ── KV 引擎 ──
   :kv get <key>                                读取
@@ -435,9 +435,9 @@ pub(crate) fn print_help() {
   :vec count <name>                            向量索引数量
   :vec insert <name> <id> <v1,v2,...>          插入向量（id=u64，逗号分隔 f32）
   :vec search <name> <k> <v1,v2,...>           KNN 搜索（cosine，返回 top-k）
-  :vec get <name> <id>                         取回单条向量（仅嵌入）
+  :vec get <name> <id>                         取回单条向量
   :vec delete <name> <id>                      删除向量
-  :vec rebuild <name>                          重建 HNSW 索引（仅嵌入）
+  :vec rebuild <name>                          重建 HNSW 索引
 
 ── 地理空间 ──
   :geo members <name>                          列出成员名
@@ -463,15 +463,15 @@ pub(crate) fn print_help() {
   :cluster role                                当前节点角色
   :cluster epoch                               当前 epoch
   :cluster promote                             提升为 Primary
-  :cluster step-down <addr> <epoch>            降为 Replica（仅嵌入）
+  :cluster step-down <addr> <epoch>            降为 Replica
 
 ── 备份恢复 ──
   :backup export <dir> [ks...]                 导出快照（可选 keyspace，空=全部）
   :backup import <dir>                         从目录导入
-  :backup snapshot <dir> [ts_ms]               一致性快照 PITR（仅嵌入）
-  :backup restore <dir> latest|snapshot|lsn <n>|ts <ms>  恢复到指定点（仅嵌入）
+  :backup snapshot <dir> [ts_ms]               一致性快照 PITR
+  :backup restore <dir> latest|snapshot|lsn <n>|ts <ms>  恢复到指定点
 
-── OpLog（仅嵌入）──
+── OpLog ──
   :oplog lsn                                   当前 LSN
   :oplog get <lsn>                             取单条
   :oplog range <from> <to> [limit]             取范围
