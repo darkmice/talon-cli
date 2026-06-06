@@ -34,10 +34,11 @@ impl NetBackend {
 
         // 认证
         if let Some(tok) = token {
-            let auth_cmd = format!(r#"{{"auth":"{}"}}"#, tok);
+            // 用 serde_json 构造，避免 token 含特殊字符破坏帧格式
+            let auth_cmd = serde_json::json!({ "auth": tok }).to_string();
             backend.send_frame(auth_cmd.as_bytes())?;
             let resp = backend.recv_frame()?;
-            if resp.contains("auth failed") {
+            if resp.contains("auth failed") || resp.contains("auth_failed") {
                 return Err("认证失败：token 错误".into());
             }
         }
@@ -53,7 +54,8 @@ impl NetBackend {
 
     /// 发送帧：[4 bytes big-endian length][payload]。
     fn send_frame(&mut self, data: &[u8]) -> Result<(), String> {
-        let len = data.len() as u32;
+        let len = u32::try_from(data.len())
+            .map_err(|_| format!("帧过大（超过 4GB）: {} bytes", data.len()))?;
         self.stream
             .write_all(&len.to_be_bytes())
             .map_err(|e| format!("发送帧长度失败: {}", e))?;
@@ -203,12 +205,12 @@ fn kv_to_json(parts: &[&str]) -> Result<String, String> {
         }
         "incrby" => {
             require_arg(parts, 4, ":kv incrby <key> <delta>")?;
-            let delta: i64 = parts[3].parse().unwrap_or(1);
+            let delta: i64 = parts[3].parse().map_err(|_| "delta 须为整数".to_string())?;
             serde_json::json!({"module":"kv","action":"incrby","params":{"key":parts[2],"delta":delta}})
         }
         "decrby" => {
             require_arg(parts, 4, ":kv decrby <key> <delta>")?;
-            let delta: i64 = parts[3].parse().unwrap_or(1);
+            let delta: i64 = parts[3].parse().map_err(|_| "delta 须为整数".to_string())?;
             serde_json::json!({"module":"kv","action":"decrby","params":{"key":parts[2],"delta":delta}})
         }
         "setnx" => {
@@ -281,11 +283,14 @@ fn vec_to_json(parts: &[&str]) -> Result<String, String> {
         }
         "search" => {
             require_arg(parts, 5, ":vec search <name> <k> <v1,v2,...>")?;
-            let k: usize = parts[3].parse().unwrap_or(10);
+            let k: usize = parts[3].parse().map_err(|_| "k 须为正整数".to_string())?;
             let vec_vals: Vec<f32> = parts[4]
                 .split(',')
                 .filter_map(|s| s.trim().parse().ok())
                 .collect();
+            if vec_vals.is_empty() {
+                return Err("查询向量不能为空".into());
+            }
             // server exec_vector 读 "vector" 字段（非 "query"）
             serde_json::json!({"module":"vector","action":"search","params":{
                 "name":parts[2], "k":k, "vector": vec_vals, "metric":"cosine"
@@ -657,12 +662,19 @@ fn passthrough_to_json(module: &str, parts: &[&str]) -> Result<String, String> {
 }
 
 /// 把可选的 props_json 参数解析为 JSON Value object（图属性用）。
-/// 未提供 → 空 object；提供但非法 JSON → Err。
+/// 未提供 → 空 object；提供但非法 JSON 或非 object → Err。
+/// 与嵌入模式 cmdline::parse_props_json 的校验严格度保持一致。
 fn parse_props_value(raw: Option<&str>) -> Result<serde_json::Value, String> {
     match raw {
         None => Ok(serde_json::json!({})),
-        Some(s) => serde_json::from_str::<serde_json::Value>(s)
-            .map_err(|e| format!("属性 JSON 解析失败: {}", e)),
+        Some(s) => {
+            let v = serde_json::from_str::<serde_json::Value>(s)
+                .map_err(|e| format!("属性 JSON 解析失败: {}", e))?;
+            if !v.is_object() {
+                return Err("属性必须是 JSON object，如 {\"k\":\"v\"}".into());
+            }
+            Ok(v)
+        }
     }
 }
 
